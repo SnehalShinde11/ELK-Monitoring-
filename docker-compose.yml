@@ -1,52 +1,65 @@
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.19.0
-    container_name: elasticsearch
     restart: unless-stopped
     environment:
-      - discovery.type=single-node
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:?Set ELASTIC_PASSWORD in .env}
-      - xpack.security.enabled=true
-      - xpack.security.http.ssl.enabled=false
-      - xpack.security.transport.ssl.enabled=false
-      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      discovery.type: single-node
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?Set ELASTIC_PASSWORD in .env}
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
     ports:
       - "127.0.0.1:9200:9200"
     volumes:
       - es_data:/usr/share/elasticsearch/data
     healthcheck:
-      test:
-        - CMD-SHELL
-        - "curl -fsS -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health >/dev/null || exit 1"
+      test: ["CMD-SHELL", "curl -fsS -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health >/dev/null"]
       interval: 20s
       timeout: 10s
       retries: 15
       start_period: 60s
-    networks:
-      - elk
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.19.0
-    container_name: kibana
     restart: unless-stopped
     depends_on:
       elasticsearch:
         condition: service_healthy
     environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - ELASTICSEARCH_USERNAME=kibana_system
-      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD:?Set KIBANA_PASSWORD in .env}
-      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY:-}
-      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${SAVED_OBJECTS_ENCRYPTION_KEY:-}
-      - XPACK_REPORTING_ENCRYPTIONKEY=${REPORTING_ENCRYPTION_KEY:-}
+      ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: ${KIBANA_PASSWORD:?Set KIBANA_PASSWORD in .env}
+      XPACK_SECURITY_ENCRYPTIONKEY: ${KIBANA_ENCRYPTION_KEY:?Set KIBANA_ENCRYPTION_KEY in .env}
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: ${SAVED_OBJECTS_ENCRYPTION_KEY:?Set SAVED_OBJECTS_ENCRYPTION_KEY in .env}
+      XPACK_REPORTING_ENCRYPTIONKEY: ${REPORTING_ENCRYPTION_KEY:?Set REPORTING_ENCRYPTION_KEY in .env}
     ports:
       - "127.0.0.1:5601:5601"
-    networks:
-      - elk
 
-networks:
-  elk:
-    driver: bridge
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.19.0
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      LOGSTASH_PASSWORD: ${LOGSTASH_PASSWORD:?Set LOGSTASH_PASSWORD in .env}
+      LS_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - ./pipeline/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.19.0
+    user: root
+    restart: unless-stopped
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    depends_on:
+      - logstash
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ./logs:/var/log/app:ro
+      - filebeat_data:/usr/share/filebeat/data
 
 volumes:
   es_data:
+  filebeat_data:

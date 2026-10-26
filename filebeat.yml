@@ -1,0 +1,8 @@
+filebeat.inputs:
+  - type: filestream
+    id: elk-lab-app-logs
+    paths:
+      - /var/log/app/*.log
+
+output.logstash:
+  hosts: ["logstash:5044"]
