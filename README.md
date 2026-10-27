@@ -110,15 +110,34 @@ docker compose exec -T logstash \
 
 Expected output includes `Configuration OK`.
 
-## 4. Send a test log and verify ingestion
+## Task 3 — Ship logs with Filebeat
+
+Filebeat is already configured as a Docker service in `docker-compose.yml`. The `filebeat.yml` configuration tails `/var/log/app/*.log` inside the Filebeat container. Compose mounts your host's `./logs` directory at `/var/log/app` as read-only and sends events to Logstash at `logstash:5044` over the internal Docker network.
+
+Start the services if they are not running:
+
+```bash
+docker compose up -d filebeat logstash
+```
+
+Create a sample event in the host log directory. This line matches the Grok pattern configured in Logstash:
 
 ```bash
 echo "$(date -u '+%Y-%m-%d %H:%M:%S') INFO  [payment-service] Payment processed order_id=9001" \
   >> logs/payment-service.log
-sleep 10
 ```
 
-Check that the data stream exists:
+Check Filebeat and Logstash if the event does not arrive:
+
+```bash
+docker compose logs --tail=100 filebeat logstash
+```
+
+Filebeat keeps registry state in a Docker volume, so appending a **new line** is the correct way to test subsequent changes; old lines are not necessarily re-shipped.
+
+## Task 4 — Index logs in Elasticsearch
+
+Wait a few seconds after adding the sample event, then check that the data stream exists:
 
 ```bash
 curl -fsS -u "elastic:${ELASTIC_PASSWORD}" \
@@ -134,14 +153,61 @@ curl -fsS -u "elastic:${ELASTIC_PASSWORD}" \
   -d '{"query":{"match_phrase":{"message":"Payment processed"}},"_source":["@timestamp","message","log.level","service.name","order_id","tags"]}'
 ```
 
-A successfully parsed document should contain `@timestamp`, `log.level`, `service.name`, `message`, and integer `order_id`. Use a new log line for each test because Filebeat tracks which lines it has already read.
+A successfully parsed document should contain `@timestamp`, `log.level`, `service.name`, `message`, and integer `order_id`. You can confirm the parsed fields in the `_source` section of the search response.
 
-## 5. Explore logs in Kibana
+To make charts meaningful, send several events with different levels:
+
+```bash
+for entry in \
+  'INFO  [payment-service] Payment processed order_id=9002' \
+  'WARN  [payment-service] Payment delayed order_id=9003' \
+  'ERROR [payment-service] Payment failed order_id=9004' \
+  'INFO  [payment-service] Payment processed order_id=9005'; do
+  echo "$(date -u '+%Y-%m-%d %H:%M:%S') $entry" >> logs/payment-service.log
+  sleep 1
+done
+```
+
+## Task 5 — Explore logs in Kibana
 
 1. Open `http://127.0.0.1:5601` on the Docker host. For a remote VM, use an SSH tunnel, for example: `ssh -L 5601:127.0.0.1:5601 USER@VM_ADDRESS`.
 2. Sign in as `elastic` using `ELASTIC_PASSWORD`. The `kibana_system` account is for the Kibana service, not interactive login.
-3. Create a data view with pattern `logs-app-*` and time field `@timestamp`.
-4. Open **Discover**. In **Lens**, try a bar chart by `log.level` and a time chart by `@timestamp`.
+3. Open **Stack Management → Data Views** (menu wording may vary by Kibana version) and choose **Create data view**.
+4. Enter `logs-app-*` as the data view name/pattern and select `@timestamp` as the time field. Save the data view.
+5. Open **Discover**, select the `logs-app-*` data view, and set the time picker to **Last 15 minutes** (or a range covering when you generated the sample events).
+6. Search for `service.name : "payment-service"`. Try `log.level : "ERROR"` to filter errors, or search for `order_id : 9004` to find the sample failed payment.
+
+If Discover shows no results, widen the time range and confirm Task 4's Elasticsearch search returns documents.
+
+## Task 6 — Create visualizations in Kibana
+
+Open **Analytics → Visualize Library** (or **Dashboard → Create visualization**, depending on the Kibana menu) and create the following visualizations using the `logs-app-*` data view.
+
+### A. Bar chart: count of logs by level
+
+1. Choose **Create visualization** and select **Lens**.
+2. Select the `logs-app-*` data view.
+3. Choose **Bar vertical** as the chart type.
+4. Drag `log.level` to the horizontal axis (X-axis / **Horizontal axis**).
+5. Set the vertical axis (Y-axis / **Vertical axis**) to **Count of records**.
+6. Set the time picker to a range that includes the sample events. You should see separate bars for `INFO`, `WARN`, and `ERROR` if those events were ingested.
+7. Give it a title such as **Log Count by Level**, then click **Save** and save it to the Visualize Library.
+
+### B. Histogram: log frequency over time
+
+1. Create another **Lens** visualization using `logs-app-*`.
+2. Choose **Bar vertical** or a **Line** chart.
+3. Put `@timestamp` on the horizontal axis and use **Date histogram** as its operation/interval.
+4. Set the vertical axis to **Count of records**.
+5. Select a suitable time range and interval; save it as **Log Volume Over Time**.
+
+### C. Optional: add visualizations to a dashboard
+
+1. Open **Dashboard** and click **Create dashboard**.
+2. Click **Add from library** and add **Log Count by Level** and **Log Volume Over Time**.
+3. Arrange the panels and click **Save**. Generate a few more sample log lines and refresh the dashboard to see new events.
+
+The sample lab generates a small number of events, so charts will be basic. In a real environment, visualizations become more useful as more logs arrive over time.
 
 ## Troubleshooting
 
